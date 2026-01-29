@@ -35,7 +35,7 @@ public record MemberSerializationInfo(
 
         if (CustomFormatter is not null)
         {
-            return $"this.__{this.Name}CustomFormatter__.Serialize(ref writer, {memberRead}, options)";
+            return $"((MsgPack::Formatters.IMessagePackFormatter<{this.Type}>)this.__{this.Name}CustomFormatter__).Serialize(ref writer, {memberRead}, options)";
         }
         else if (PrimitiveTypes.Contains(this.Type))
         {
@@ -51,7 +51,7 @@ public record MemberSerializationInfo(
     {
         if (CustomFormatter is not null)
         {
-            return $"this.__{this.Name}CustomFormatter__.Deserialize(ref reader, options)";
+            return $"((MsgPack::Formatters.IMessagePackFormatter<{this.Type}>)this.__{this.Name}CustomFormatter__).Deserialize(ref reader, options)";
         }
         else if (PrimitiveTypes.Contains(this.Type))
         {
@@ -61,7 +61,7 @@ public record MemberSerializationInfo(
             }
             else
             {
-                return $"reader.Read{this.ShortTypeName!.Replace("[]", "s")}()";
+                return $"reader.Read{this.ShortTypeName.Replace("[]", "s")}()";
             }
         }
         else
