@@ -15,10 +15,9 @@ namespace MessagePack.SourceGenerator.CodeAnalysis;
 /// Describes a type (that is not an array, nor nested type) by its name and qualifiers.
 /// </summary>
 [DebuggerDisplay($"{{{nameof(DebuggerDisplay)},nq}}")]
-public record QualifiedNamedTypeName : QualifiedTypeName, IComparable<QualifiedNamedTypeName>
+public sealed record QualifiedNamedTypeName : QualifiedTypeName, IComparable<QualifiedNamedTypeName>
 {
     private readonly TypeKind kind;
-    private readonly bool isRecord;
 
     public QualifiedNamedTypeName(TypeKind kind, bool isRecord = false)
     {
@@ -32,8 +31,8 @@ public record QualifiedNamedTypeName : QualifiedTypeName, IComparable<QualifiedN
             throw new ArgumentException("Cannot be a record if kind is not a class or struct.", nameof(isRecord));
         }
 
-        this.kind = kind;
-        this.isRecord = isRecord;
+        this.Kind = kind;
+        this.IsRecord = isRecord;
     }
 
     [SetsRequiredMembers]
@@ -41,21 +40,13 @@ public record QualifiedNamedTypeName : QualifiedTypeName, IComparable<QualifiedN
     {
         this.Name = symbol.Name;
         this.Kind = symbol.TypeKind;
-        this.isRecord |= symbol.IsRecord;
-        this.Container = symbol.ContainingType is { } nesting ? new NestingTypeContainer(new(nesting, recursionGuard)) :
-            symbol.ContainingNamespace?.GetFullNamespaceName() is string ns ? new NamespaceTypeContainer(ns) :
+        this.IsRecord |= symbol.IsRecord;
+        this.Container = symbol.ContainingType is { } nesting ? new NestingTypeContainer(new QualifiedNamedTypeName(nesting, recursionGuard)) :
+            symbol.ContainingNamespace?.GetFullNamespaceName() is { } ns ? new NamespaceTypeContainer(ns) :
             null;
         this.TypeParameters = CodeAnalysisUtilities.GetTypeParameters(symbol, recursionGuard);
         this.TypeArguments = CodeAnalysisUtilities.GetTypeArguments(symbol, recursionGuard);
         this.ReferenceTypeNullableAnnotation = symbol.NullableAnnotation;
-    }
-
-    [SetsRequiredMembers]
-    public QualifiedNamedTypeName(ITypeParameterSymbol symbol)
-    {
-        this.Name = symbol.Name;
-        this.Kind = TypeKind.TypeParameter;
-        this.ReferenceTypeNullableAnnotation = symbol.ReferenceTypeConstraintNullableAnnotation;
     }
 
     /// <summary>
@@ -75,16 +66,16 @@ public record QualifiedNamedTypeName : QualifiedTypeName, IComparable<QualifiedN
 
         init
         {
-            if (kind == TypeKind.Array)
+            if (this.kind == TypeKind.Array)
             {
-                throw new ArgumentException($"Create an {nameof(QualifiedArrayTypeName)} instead.", nameof(kind));
+                throw new ArgumentException($"Create an {nameof(QualifiedArrayTypeName)} instead.", nameof(value));
             }
 
             this.kind = value;
         }
     }
 
-    public override bool IsRecord => this.isRecord;
+    public override bool IsRecord { get; }
 
     /// <summary>
     /// Gets the access modifier that should accompany any declaration of this type, if any.
@@ -108,7 +99,7 @@ public record QualifiedNamedTypeName : QualifiedTypeName, IComparable<QualifiedN
 
     public override int GetHashCode() => this.Name.GetHashCode();
 
-    public virtual bool Equals(QualifiedNamedTypeName? other)
+    public bool Equals(QualifiedNamedTypeName? other)
     {
         if (other is not QualifiedNamedTypeName typedOther)
         {

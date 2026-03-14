@@ -17,7 +17,7 @@ internal static class TransformUtilities
     {
         switch (container)
         {
-            case NamespaceTypeContainer { Namespace: string ns }:
+            case NamespaceTypeContainer { Namespace: { } ns }:
                 writer($"namespace {ns} {{\r\n");
                 return new DisposeAction(() => writer("}\r\n"));
             case NestingTypeContainer { NestingType: { } nestingType }:
