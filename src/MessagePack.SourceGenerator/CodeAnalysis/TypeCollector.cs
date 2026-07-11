@@ -1237,6 +1237,7 @@ public class TypeCollector
         // GetConstructor
         var ctorEnumerator = default(IEnumerator<IMethodSymbol>);
         var ctor = formattedType.Constructors.SingleOrDefault(x => x.GetAttributes().Any(y => y.AttributeClass != null && y.AttributeClass.ApproximatelyEqual(this.typeReferences.SerializationConstructorAttribute)));
+        bool hasExplicitSerializationConstructor = ctor is not null;
         if (ctor is null)
         {
             ctorEnumerator = formattedType.Constructors
@@ -1263,9 +1264,33 @@ public class TypeCollector
             nestedFormatterRequired |= IsPartialTypeRequired(ctor.DeclaredAccessibility);
 
             var constructorLookupDictionary = stringMembers.ToLookup(x => x.Value.Info.Name, x => x, StringComparer.OrdinalIgnoreCase);
-            IReadOnlyDictionary<int, (MemberSerializationInfo Info, ITypeSymbol TypeSymbol)> ctorParamIndexIntMembersDictionary = intMembers
-                .OrderBy(x => x.Key).Select((x, i) => (Key: x.Value, Index: i))
+            (MemberSerializationInfo Info, ITypeSymbol TypeSymbol)[] orderedIntMembers = intMembers
+                .OrderBy(x => x.Key)
+                .Select(x => x.Value)
+                .ToArray();
+            IReadOnlyDictionary<int, (MemberSerializationInfo Info, ITypeSymbol TypeSymbol)> ctorParamIndexIntMembersDictionary = orderedIntMembers
+                .Select((x, i) => (Key: x, Index: i))
                 .ToDictionary(x => x.Index, x => x.Key);
+
+            // Preserve MessagePack's positional int-key constructor contract. Explicit constructors get a
+            // narrow fallback that may skip members which can be restored after construction.
+            if (isIntKey
+                && hasExplicitSerializationConstructor
+                && !this.TryMatchIntKeyConstructorByPosition(ctor, orderedIntMembers, out DiagnosticDescriptor? failureDescriptor, out Location? failureLocation))
+            {
+                if (!this.TryCreateSparseIntKeyConstructorMapping(ctor, orderedIntMembers, out ctorParamIndexIntMembersDictionary, out bool invalidMemberSequence))
+                {
+                    if (invalidMemberSequence)
+                    {
+                        failureDescriptor = MsgPack00xMessagePackAnalyzer.DeserializingConstructorParameterIndexMissing;
+                        failureLocation = GetParameterListLocation(ctor);
+                    }
+
+                    this.reportDiagnostic?.Invoke(Diagnostic.Create(failureDescriptor!, failureLocation));
+                    return null;
+                }
+            }
+
             do
             {
                 constructorParameters.Clear();
@@ -1452,6 +1477,111 @@ public class TypeCollector
             this.options.Generator.Resolver);
 
         return info;
+    }
+
+    private bool TryMatchIntKeyConstructorByPosition(
+        IMethodSymbol ctor,
+        IReadOnlyList<(MemberSerializationInfo Info, ITypeSymbol TypeSymbol)> orderedMembers,
+        out DiagnosticDescriptor? failureDescriptor,
+        out Location? failureLocation)
+    {
+        for (int parameterIndex = 0; parameterIndex < ctor.Parameters.Length; parameterIndex++)
+        {
+            IParameterSymbol parameter = ctor.Parameters[parameterIndex];
+            if (parameterIndex >= orderedMembers.Count)
+            {
+                failureDescriptor = MsgPack00xMessagePackAnalyzer.DeserializingConstructorParameterIndexMissing;
+                failureLocation = GetParameterListLocation(ctor);
+                return false;
+            }
+
+            (MemberSerializationInfo Info, ITypeSymbol TypeSymbol) member = orderedMembers[parameterIndex];
+            if (!member.Info.IsReadable || this.compilation.ClassifyConversion(member.TypeSymbol, parameter.Type) is not { IsImplicit: true })
+            {
+                failureDescriptor = MsgPack00xMessagePackAnalyzer.DeserializingConstructorParameterTypeMismatch;
+                failureLocation = GetLocation(parameter);
+                return false;
+            }
+        }
+
+        failureDescriptor = null;
+        failureLocation = null;
+        return true;
+    }
+
+    private bool TryCreateSparseIntKeyConstructorMapping(
+        IMethodSymbol ctor,
+        IReadOnlyList<(MemberSerializationInfo Info, ITypeSymbol TypeSymbol)> orderedMembers,
+        out IReadOnlyDictionary<int, (MemberSerializationInfo Info, ITypeSymbol TypeSymbol)> constructorParameterMapping,
+        out bool invalidMemberSequence)
+    {
+        constructorParameterMapping = ImmutableDictionary<int, (MemberSerializationInfo Info, ITypeSymbol TypeSymbol)>.Empty;
+        invalidMemberSequence = false;
+        var matchedMembers = new List<(MemberSerializationInfo Info, ITypeSymbol TypeSymbol)>();
+        int previousMemberIndex = -1;
+        foreach (IParameterSymbol parameter in ctor.Parameters)
+        {
+            int matchedMemberIndex = -1;
+            for (int memberIndex = 0; memberIndex < orderedMembers.Count; memberIndex++)
+            {
+                if (!string.Equals(orderedMembers[memberIndex].Info.Name, parameter.Name, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                // A parameter name must identify exactly one CLR member, including across inheritance.
+                if (matchedMemberIndex >= 0)
+                {
+                    return false;
+                }
+
+                matchedMemberIndex = memberIndex;
+            }
+
+            if (matchedMemberIndex < 0)
+            {
+                return false;
+            }
+
+            if (matchedMemberIndex <= previousMemberIndex)
+            {
+                invalidMemberSequence = true;
+                return false;
+            }
+
+            (MemberSerializationInfo Info, ITypeSymbol TypeSymbol) matchedMember = orderedMembers[matchedMemberIndex];
+            if (!matchedMember.Info.IsReadable || this.compilation.ClassifyConversion(matchedMember.TypeSymbol, parameter.Type) is not { IsImplicit: true })
+            {
+                return false;
+            }
+
+            for (int skippedMemberIndex = previousMemberIndex + 1; skippedMemberIndex < matchedMemberIndex; skippedMemberIndex++)
+            {
+                // IsWritable includes ordinary setters and init/required members handled by the object initializer.
+                if (!orderedMembers[skippedMemberIndex].Info.IsWritable)
+                {
+                    invalidMemberSequence = true;
+                    return false;
+                }
+            }
+
+            matchedMembers.Add(matchedMember);
+            previousMemberIndex = matchedMemberIndex;
+        }
+
+        for (int skippedMemberIndex = previousMemberIndex + 1; skippedMemberIndex < orderedMembers.Count; skippedMemberIndex++)
+        {
+            if (!orderedMembers[skippedMemberIndex].Info.IsWritable)
+            {
+                invalidMemberSequence = true;
+                return false;
+            }
+        }
+
+        constructorParameterMapping = matchedMembers
+            .Select((member, parameterIndex) => (ParameterIndex: parameterIndex, Member: member))
+            .ToDictionary(x => x.ParameterIndex, x => x.Member);
+        return true;
     }
 
     private static IEnumerable<BaseTypeDeclarationSyntax> FindNonPartialTypes(ITypeSymbol target)

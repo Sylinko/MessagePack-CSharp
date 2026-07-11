@@ -1672,7 +1672,8 @@ namespace MessagePack.Internal
 
             // GetConstructor
             IEnumerator<ConstructorInfo>? ctorEnumerator = null;
-            ConstructorInfo? ctor = ti.DeclaredConstructors.SingleOrDefault(x => x.GetCustomAttribute<SerializationConstructorAttribute>(false) is not null);
+            ConstructorInfo? serializationConstructor = ti.DeclaredConstructors.SingleOrDefault(x => x.GetCustomAttribute<SerializationConstructorAttribute>(false) is not null);
+            ConstructorInfo? ctor = serializationConstructor;
             if (ctor == null)
             {
                 ctorEnumerator =
@@ -1701,6 +1702,7 @@ namespace MessagePack.Internal
                 {
                     constructorParameters.Clear();
                     var ctorParamIndex = 0;
+                    MessagePackDynamicObjectResolverException? intKeyMatchException = null;
                     foreach (ParameterInfo item in ctor.GetParameters())
                     {
                         EmittableMember? paramMember;
@@ -1723,7 +1725,8 @@ namespace MessagePack.Internal
                                     }
                                     else
                                     {
-                                        throw new MessagePackDynamicObjectResolverException("can't find matched constructor parameter, parameterType mismatch. type:" + type.FullName + " parameterIndex:" + ctorParamIndex + " parameterType:" + item.ParameterType.Name);
+                                        intKeyMatchException = new MessagePackDynamicObjectResolverException("can't find matched constructor parameter, parameterType mismatch. type:" + type.FullName + " parameterIndex:" + ctorParamIndex + " parameterType:" + item.ParameterType.Name);
+                                        break;
                                     }
                                 }
                             }
@@ -1736,7 +1739,8 @@ namespace MessagePack.Internal
                                 }
                                 else
                                 {
-                                    throw new MessagePackDynamicObjectResolverException("can't find matched constructor parameter, index not found. type:" + type.FullName + " parameterIndex:" + ctorParamIndex);
+                                    intKeyMatchException = new MessagePackDynamicObjectResolverException("can't find matched constructor parameter, index not found. type:" + type.FullName + " parameterIndex:" + ctorParamIndex);
+                                    break;
                                 }
                             }
                         }
@@ -1793,6 +1797,13 @@ namespace MessagePack.Internal
                         }
 
                         ctorParamIndex++;
+                    }
+
+                    if (intKeyMatchException is not null
+                        && (serializationConstructor is null
+                            || !TryMatchSparseIntKeySerializationConstructor(serializationConstructor, intMembers.Values, constructorParameters)))
+                    {
+                        throw intKeyMatchException;
                     }
                 }
                 while (TryGetNextConstructor(ctorEnumerator, ref ctor));
@@ -1921,6 +1932,60 @@ namespace MessagePack.Internal
             // which cannot be declared in C# because of the reserved characters in its name.
             return type.IsClass
                 && type.GetMethod("<Clone>$", BindingFlags.Public | BindingFlags.Instance) is object;
+        }
+
+        /// <summary>
+        /// Tries to bind an explicitly selected int-key constructor to a key-ordered subset of members.
+        /// </summary>
+        /// <remarks>
+        /// Positional matching remains the primary protocol. This fallback only makes writable members optional
+        /// constructor inputs; every immutable member must still be restored by the constructor.
+        /// </remarks>
+        private static bool TryMatchSparseIntKeySerializationConstructor(
+            ConstructorInfo constructor,
+            IEnumerable<EmittableMember> members,
+            List<EmittableMemberAndConstructorParameter> constructorParameters)
+        {
+            EmittableMember[] memberArray = members.ToArray();
+            ILookup<string, EmittableMember> membersByName = memberArray.ToLookup(member => member.Name, StringComparer.OrdinalIgnoreCase);
+            var matches = new List<EmittableMemberAndConstructorParameter>();
+            int? previousKey = null;
+
+            foreach (ParameterInfo parameter in constructor.GetParameters())
+            {
+                if (parameter.Name is not string parameterName)
+                {
+                    return false;
+                }
+
+                using IEnumerator<EmittableMember> candidates = membersByName[parameterName].GetEnumerator();
+                if (!candidates.MoveNext())
+                {
+                    return false;
+                }
+
+                EmittableMember member = candidates.Current;
+                if (candidates.MoveNext()
+                    || (previousKey is int key && member.IntKey <= key)
+                    || !member.IsReadable
+                    || (parameter.ParameterType != member.Type && !parameter.ParameterType.GetTypeInfo().IsAssignableFrom(member.Type)))
+                {
+                    return false;
+                }
+
+                matches.Add(new EmittableMemberAndConstructorParameter(member, parameter));
+                previousKey = member.IntKey;
+            }
+
+            // A member omitted from the constructor is safe only when the emitted formatter can assign it later.
+            if (memberArray.Any(member => !member.IsWritable && !matches.Any(match => ReferenceEquals(match.MemberInfo, member))))
+            {
+                return false;
+            }
+
+            constructorParameters.Clear();
+            constructorParameters.AddRange(matches);
+            return true;
         }
 
         private static bool TryGetNextConstructor(IEnumerator<ConstructorInfo>? ctorEnumerator, [NotNullWhen(true)] ref ConstructorInfo? ctor)
