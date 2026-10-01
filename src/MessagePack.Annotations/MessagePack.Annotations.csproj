@@ -3,6 +3,7 @@
   <PropertyGroup>
     <NoWarn>$(NoWarn);CS0649</NoWarn>
     <RootNamespace>MessagePack</RootNamespace>
+    <PackageId>MessagePack.Annotations</PackageId>
 
     <Title>MessagePack annotations for C#</Title>
     <Description>Attributes and interfaces for .NET types serializable with MessagePack.</Description>

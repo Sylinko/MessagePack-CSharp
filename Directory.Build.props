@@ -1,6 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Project>
   <PropertyGroup>
+    <Version>3.1.3</Version>
+    <PackageVersion Condition="'$(PackageVersion)' == ''">999.0.0</PackageVersion>
+    <!-- Preserve the existing fork's assembly identity independently of its package version. -->
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <FileVersion>3.1.3.0</FileVersion>
+    <RepositoryUrl>https://github.com/Sylinko/MessagePack-CSharp</RepositoryUrl>
     <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
     <RepoRootPath>$(MSBuildThisFileDirectory)</RepoRootPath>
     <BaseIntermediateOutputPath>$(RepoRootPath)obj\$([MSBuild]::MakeRelative($(RepoRootPath), $(MSBuildProjectDirectory)))\</BaseIntermediateOutputPath>
