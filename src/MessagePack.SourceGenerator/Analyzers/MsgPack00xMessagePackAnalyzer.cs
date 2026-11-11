@@ -311,7 +311,16 @@ public class MsgPack00xMessagePackAnalyzer : DiagnosticAnalyzer
         isEnabledByDefault: true,
         helpLinkUri: AnalyzerUtilities.GetHelpLink(CollidingMemberNamesInForceMapModeId));
 
+    public static readonly DiagnosticDescriptor InvalidExtensionData = new(
+        id: "MsgPack019",
+        title: "Invalid extension data property",
+        category: Category,
+        messageFormat: "Extension data requires one public get/set property of type Dictionary<{0}, byte[]>, without KeyAttribute, required, static or an init accessor",
+        defaultSeverity: DiagnosticSeverity.Error,
+        isEnabledByDefault: true);
+
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics { get; } = ImmutableArray.Create(
+        InvalidExtensionData,
         TypeMustBeMessagePackObject,
         MessageFormatterMustBeMessagePackFormatter,
         MemberNeedsKey,
@@ -426,7 +435,7 @@ public class MsgPack00xMessagePackAnalyzer : DiagnosticAnalyzer
 
         switch (declaredSymbol.TypeKind)
         {
-            case TypeKind.Interface when declaredSymbol.GetAttributes().Any(x2 => SymbolEqualityComparer.Default.Equals(x2.AttributeClass, typeReferences.UnionAttribute)):
+            case TypeKind.Interface when declaredSymbol.GetAttributes().Any(x2 => typeReferences.IsUnionAttribute(x2.AttributeClass)):
             case TypeKind.Class or TypeKind.Struct when declaredSymbol.GetAttributes().Any(x2 => SymbolEqualityComparer.Default.Equals(x2.AttributeClass, typeReferences.MessagePackObjectAttribute)):
                 TypeCollector.Collect(context.Compilation, options, typeReferences, context.ReportDiagnostic, declaredSymbol, context.CancellationToken);
                 break;

@@ -18,6 +18,21 @@ public record ReferenceSymbols(
     INamedTypeSymbol? IgnoreDataMemberAttribute,
     INamedTypeSymbol IMessagePackSerializationCallbackReceiver)
 {
+    /// <summary>
+    /// Gets the explicit marker when available in the referenced annotations package.
+    /// </summary>
+    public INamedTypeSymbol? MessagePackUnionAttribute { get; init; }
+
+    /// <summary>
+    /// Recognizes both published marker names without requiring newer annotations.
+    /// </summary>
+    public bool IsUnionAttribute(INamedTypeSymbol? attribute)
+    {
+        return SymbolEqualityComparer.Default.Equals(attribute, this.UnionAttribute)
+            || (this.MessagePackUnionAttribute is not null
+                && SymbolEqualityComparer.Default.Equals(attribute, this.MessagePackUnionAttribute));
+    }
+
     public static bool TryCreate(Compilation compilation, [NotNullWhen(true)] out ReferenceSymbols? instance)
     {
         instance = null;
@@ -79,7 +94,10 @@ public record ReferenceSymbols(
             messageFormatter,
             messageFormatterOfT,
             ignoreDataMemberAttribute,
-            messagePackSerializationCallbackReceiver);
+            messagePackSerializationCallbackReceiver)
+        {
+            MessagePackUnionAttribute = compilation.GetTypeByMetadataName("MessagePack.MessagePackUnionAttribute"),
+        };
         return true;
     }
 }

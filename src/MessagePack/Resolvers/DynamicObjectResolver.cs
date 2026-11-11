@@ -499,6 +499,48 @@ namespace MessagePack.Internal
             il.EmitCall(getResolverFromOptions);
             il.EmitStloc(localResolver);
 
+            LocalBuilder? localExtensionData = null;
+            LocalBuilder? localExtensionKeys = null;
+            if (info.ExtensionDataProperty is { } extensionProperty)
+            {
+                localExtensionData = il.DeclareLocal(extensionProperty.PropertyType);
+                argValue.EmitLoad();
+                il.EmitCall(extensionProperty.GetGetMethod()!);
+                il.EmitStloc(localExtensionData);
+                if (!info.IsIntKey)
+                {
+                    var keys = info.Members.Where(m => m.IsReadable).Select(m => m.StringKey!).ToArray();
+                    localExtensionKeys = il.DeclareLocal(typeof(string[]));
+                    il.EmitLdc_I4(keys.Length);
+                    il.Emit(OpCodes.Newarr, typeof(string));
+                    for (var i = 0; i < keys.Length; i++)
+                    {
+                        il.Emit(OpCodes.Dup);
+                        il.EmitLdc_I4(i);
+                        il.Emit(OpCodes.Ldstr, keys[i]);
+                        il.Emit(OpCodes.Stelem_Ref);
+                    }
+
+                    il.EmitStloc(localExtensionKeys);
+                }
+            }
+
+            void WriteExtension(string method, int key = 0)
+            {
+                argWriter.EmitLoad();
+                il.EmitLdloc(localExtensionData!);
+                if (info.IsIntKey)
+                {
+                    il.EmitLdc_I4(key);
+                }
+                else
+                {
+                    il.EmitLdloc(localExtensionKeys!);
+                }
+
+                il.EmitCall(typeof(ExtensionDataHelper).GetMethod(method)!);
+            }
+
             if (info.IsIntKey)
             {
                 // use Array
@@ -506,9 +548,16 @@ namespace MessagePack.Internal
                 var intKeyMap = info.Members.Where(x => x.IsReadable).ToDictionary(x => x.IntKey);
 
                 var len = maxKey + 1;
-                argWriter.EmitLoad();
-                il.EmitLdc_I4(len);
-                il.EmitCall(MessagePackWriterTypeInfo.WriteArrayHeader);
+                if (localExtensionData != null)
+                {
+                    WriteExtension(nameof(ExtensionDataHelper.WriteArrayHeader), len);
+                }
+                else
+                {
+                    argWriter.EmitLoad();
+                    il.EmitLdc_I4(len);
+                    il.EmitCall(MessagePackWriterTypeInfo.WriteArrayHeader);
+                }
 
                 var index = 0;
                 for (int i = 0; i <= maxKey; i++)
@@ -519,9 +568,16 @@ namespace MessagePack.Internal
                     }
                     else
                     {
-                        // Write Nil as Blanc
-                        argWriter.EmitLoad();
-                        il.EmitCall(MessagePackWriterTypeInfo.WriteNil);
+                        if (localExtensionData != null)
+                        {
+                            WriteExtension(nameof(ExtensionDataHelper.WriteArrayValue), i);
+                        }
+                        else
+                        {
+                            // Write nil for a slot not owned by either schema.
+                            argWriter.EmitLoad();
+                            il.EmitCall(MessagePackWriterTypeInfo.WriteNil);
+                        }
                     }
                 }
             }
@@ -530,14 +586,14 @@ namespace MessagePack.Internal
                 // use Map
                 var writeCount = info.Members.Count(x => x.IsReadable);
 
-                argWriter.EmitLoad();
-                il.EmitLdc_I4(writeCount);
-                ////if (writeCount <= MessagePackRange.MaxFixMapCount)
-                ////{
-                ////    il.EmitCall(MessagePackWriterTypeInfo.WriteFixedMapHeaderUnsafe);
-                ////}
-                ////else
+                if (localExtensionData != null)
                 {
+                    WriteExtension(nameof(ExtensionDataHelper.WriteMapHeader));
+                }
+                else
+                {
+                    argWriter.EmitLoad();
+                    il.EmitLdc_I4(writeCount);
                     il.EmitCall(MessagePackWriterTypeInfo.WriteMapHeader);
                 }
 
@@ -570,6 +626,18 @@ namespace MessagePack.Internal
 
                     EmitSerializeValue(il, type.GetTypeInfo(), item, index, tryEmitLoadCustomFormatter, argWriter, argValue, argOptions, localResolver);
                     index++;
+                }
+            }
+
+            if (localExtensionData != null)
+            {
+                if (info.IsIntKey)
+                {
+                    WriteExtension(nameof(ExtensionDataHelper.WriteArrayTail), info.Members.Where(m => m.IsReadable).Select(m => m.IntKey).DefaultIfEmpty(-1).Max() + 1);
+                }
+                else
+                {
+                    WriteExtension(nameof(ExtensionDataHelper.WriteMapValues));
                 }
             }
 
@@ -653,6 +721,8 @@ namespace MessagePack.Internal
 
             // T ____result;
             var localResult = il.DeclareLocal(type);
+            var localExtensionData = info.ExtensionDataProperty is { } extensionProperty
+                ? il.DeclareLocal(extensionProperty.PropertyType) : null;
 
             // where T : new()
             var canOverwrite = info.ConstructorParameters.Length == 0;
@@ -674,12 +744,27 @@ namespace MessagePack.Internal
             if (info.IsIntKey)
             {
                 // switch (key) { ... }
-                BuildDeserializeInternalDeserializeEachPropertyIntKey(info, typeBuilder, il, tryEmitLoadCustomFormatter, canOverwrite, ref argReader, ref argOptions, localResolver, localResult, localLength);
+                BuildDeserializeInternalDeserializeEachPropertyIntKey(info, typeBuilder, il, tryEmitLoadCustomFormatter, canOverwrite, ref argReader, ref argOptions, localResolver, localResult, localLength, localExtensionData);
             }
             else
             {
                 // var span = reader.ReadStringSpan();
-                BuildDeserializeInternalDeserializeEachPropertyStringKey(info, typeBuilder, il, tryEmitLoadCustomFormatter, canOverwrite, ref argReader, argOptions, localResolver, localResult, localLength);
+                BuildDeserializeInternalDeserializeEachPropertyStringKey(info, typeBuilder, il, tryEmitLoadCustomFormatter, canOverwrite, ref argReader, argOptions, localResolver, localResult, localLength, localExtensionData);
+            }
+
+            if (localExtensionData != null)
+            {
+                if (type.IsValueType)
+                {
+                    il.Emit(OpCodes.Ldloca, localResult);
+                }
+                else
+                {
+                    il.EmitLdloc(localResult);
+                }
+
+                il.EmitLdloc(localExtensionData);
+                il.EmitCall(info.ExtensionDataProperty!.GetSetMethod()!);
             }
 
             // ____result.OnAfterDeserialize()
@@ -693,13 +778,13 @@ namespace MessagePack.Internal
             il.Emit(OpCodes.Ret);
         }
 
-        private static void BuildDeserializeInternalDeserializeEachPropertyStringKey(ObjectSerializationInfo info, TypeBuilder typeBuilder, ILGenerator il, Func<int, ObjectSerializationInfo.EmittableMember, Action?> tryEmitLoadCustomFormatter, bool canOverwrite, ref ArgumentField argReader, ArgumentField argOptions, LocalBuilder localResolver, LocalBuilder localResult, LocalBuilder localLength)
+        private static void BuildDeserializeInternalDeserializeEachPropertyStringKey(ObjectSerializationInfo info, TypeBuilder typeBuilder, ILGenerator il, Func<int, ObjectSerializationInfo.EmittableMember, Action?> tryEmitLoadCustomFormatter, bool canOverwrite, ref ArgumentField argReader, ArgumentField argOptions, LocalBuilder localResolver, LocalBuilder localResult, LocalBuilder localLength, LocalBuilder? localExtensionData)
         {
             // Prepare local variables or assignment fields/properties
             var infoList = BuildDeserializeInternalDeserializationInfoArrayStringKey(info, il, canOverwrite);
 
             // Read Loop(for var i = 0; i < length; i++)
-            BuildDeserializeInternalDeserializeLoopStringKey(typeBuilder, il, tryEmitLoadCustomFormatter, ref argReader, ref argOptions, infoList, localResolver, localResult, localLength, canOverwrite, info);
+            BuildDeserializeInternalDeserializeLoopStringKey(typeBuilder, il, tryEmitLoadCustomFormatter, ref argReader, ref argOptions, infoList, localResolver, localResult, localLength, canOverwrite, info, localExtensionData);
 
             if (canOverwrite)
             {
@@ -713,13 +798,13 @@ namespace MessagePack.Internal
             BuildDeserializeInternalAssignFieldFromLocalVariableStringKey(info, typeBuilder, il, infoList, localResult);
         }
 
-        private static void BuildDeserializeInternalDeserializeEachPropertyIntKey(ObjectSerializationInfo info, TypeBuilder typeBuilder, ILGenerator il, Func<int, ObjectSerializationInfo.EmittableMember, Action?> tryEmitLoadCustomFormatter, bool canOverwrite, ref ArgumentField argReader, ref ArgumentField argOptions, LocalBuilder localResolver, LocalBuilder localResult, LocalBuilder localLength)
+        private static void BuildDeserializeInternalDeserializeEachPropertyIntKey(ObjectSerializationInfo info, TypeBuilder typeBuilder, ILGenerator il, Func<int, ObjectSerializationInfo.EmittableMember, Action?> tryEmitLoadCustomFormatter, bool canOverwrite, ref ArgumentField argReader, ref ArgumentField argOptions, LocalBuilder localResolver, LocalBuilder localResult, LocalBuilder localLength, LocalBuilder? localExtensionData)
         {
             // Prepare local variables or assignment fields/properties
             var infoList = BuildDeserializeInternalDeserializationInfoArrayIntKey(info, il, canOverwrite, out var gotoDefault, out var maxKey);
 
             // Read Loop(for var i = 0; i < length; i++)
-            BuildDeserializeInternalDeserializeLoopIntKey(typeBuilder, il, tryEmitLoadCustomFormatter, ref argReader, ref argOptions, infoList, localResolver, localResult, localLength, canOverwrite, gotoDefault);
+            BuildDeserializeInternalDeserializeLoopIntKey(typeBuilder, il, tryEmitLoadCustomFormatter, ref argReader, ref argOptions, infoList, localResolver, localResult, localLength, canOverwrite, gotoDefault, localExtensionData);
 
             if (canOverwrite)
             {
@@ -912,7 +997,7 @@ namespace MessagePack.Internal
             return infoList;
         }
 
-        private static void BuildDeserializeInternalDeserializeLoopIntKey(TypeBuilder typeBuilder, ILGenerator il, Func<int, ObjectSerializationInfo.EmittableMember, Action?> tryEmitLoadCustomFormatter, ref ArgumentField argReader, ref ArgumentField argOptions, DeserializeInfo[] infoList, LocalBuilder localResolver, LocalBuilder localResult, LocalBuilder localLength, bool canOverwrite, Label? gotoDefault)
+        private static void BuildDeserializeInternalDeserializeLoopIntKey(TypeBuilder typeBuilder, ILGenerator il, Func<int, ObjectSerializationInfo.EmittableMember, Action?> tryEmitLoadCustomFormatter, ref ArgumentField argReader, ref ArgumentField argOptions, DeserializeInfo[] infoList, LocalBuilder localResolver, LocalBuilder localResult, LocalBuilder localLength, bool canOverwrite, Label? gotoDefault, LocalBuilder? localExtensionData)
         {
             var key = il.DeclareLocal(typeof(int));
             var switchDefault = il.DefineLabel();
@@ -933,9 +1018,19 @@ namespace MessagePack.Internal
 
                 il.MarkLabel(switchDefault);
 
-                // default, only read. reader.ReadNextBlock();
-                reader.EmitLdarg();
-                il.EmitCall(MessagePackReaderTypeInfo.Skip);
+                if (localExtensionData != null)
+                {
+                    il.Emit(OpCodes.Ldloca, localExtensionData);
+                    il.EmitLdloc(key);
+                    reader.EmitLdarg();
+                    il.EmitCall(typeof(ExtensionDataHelper).GetMethod(nameof(ExtensionDataHelper.ReadArrayValue))!);
+                }
+                else
+                {
+                    reader.EmitLdarg();
+                    il.EmitCall(MessagePackReaderTypeInfo.Skip);
+                }
+
                 il.Emit(OpCodes.Br, loopEnd);
 
                 if (gotoDefault is not null)
@@ -971,7 +1066,7 @@ namespace MessagePack.Internal
             il.EmitIncrementFor(localLength, ForBody);
         }
 
-        private static void BuildDeserializeInternalDeserializeLoopStringKey(TypeBuilder typeBuilder, ILGenerator il, Func<int, ObjectSerializationInfo.EmittableMember, Action?> tryEmitLoadCustomFormatter, ref ArgumentField argReader, ref ArgumentField argOptions, DeserializeInfo[] infoList, LocalBuilder localResolver, LocalBuilder localResult, LocalBuilder localLength, bool canOverwrite, ObjectSerializationInfo info)
+        private static void BuildDeserializeInternalDeserializeLoopStringKey(TypeBuilder typeBuilder, ILGenerator il, Func<int, ObjectSerializationInfo.EmittableMember, Action?> tryEmitLoadCustomFormatter, ref ArgumentField argReader, ref ArgumentField argOptions, DeserializeInfo[] infoList, LocalBuilder localResolver, LocalBuilder localResult, LocalBuilder localLength, bool canOverwrite, ObjectSerializationInfo info, LocalBuilder? localExtensionData)
         {
             var automata = new AutomataDictionary();
             for (var i = 0; i < info.Members.Length; i++)
@@ -980,6 +1075,7 @@ namespace MessagePack.Internal
             }
 
             var buffer = il.DeclareLocal(typeof(ReadOnlySpan<byte>));
+            var extensionKey = localExtensionData != null ? il.DeclareLocal(typeof(ReadOnlySpan<byte>)) : null;
             var longKey = il.DeclareLocal(typeof(ulong));
             var reader = argReader;
             var options = argOptions;
@@ -993,6 +1089,11 @@ namespace MessagePack.Internal
                 reader.EmitLdarg();
                 il.EmitCall(ReadStringSpan);
                 il.EmitStloc(buffer);
+                if (extensionKey != null)
+                {
+                    il.EmitLdloc(buffer);
+                    il.EmitStloc(extensionKey);
+                }
 
                 // gen automata name lookup
                 void OnFoundAssignDirect(KeyValuePair<string?, int> x)
@@ -1044,8 +1145,18 @@ namespace MessagePack.Internal
 #endif
 
                 il.MarkLabel(readNext);
-                reader.EmitLdarg();
-                il.EmitCall(MessagePackReaderTypeInfo.Skip);
+                if (localExtensionData != null)
+                {
+                    il.Emit(OpCodes.Ldloca, localExtensionData);
+                    il.EmitLdloc(extensionKey!);
+                    reader.EmitLdarg();
+                    il.EmitCall(typeof(ExtensionDataHelper).GetMethod(nameof(ExtensionDataHelper.ReadMapValue))!);
+                }
+                else
+                {
+                    reader.EmitLdarg();
+                    il.EmitCall(MessagePackReaderTypeInfo.Skip);
+                }
 
                 il.MarkLabel(loopEnd);
             }
@@ -1411,6 +1522,8 @@ namespace MessagePack.Internal
     {
         internal Type Type { get; }
 
+        internal PropertyInfo? ExtensionDataProperty { get; }
+
         internal bool IsIntKey { get; }
 
         internal bool IsStringKey => !this.IsIntKey;
@@ -1435,6 +1548,23 @@ namespace MessagePack.Internal
             this.IsClass = isClass;
             this.BestmatchConstructor = bestmatchConstructor;
             this.IsIntKey = isIntKey;
+            var extensionProperties = type.GetRuntimeProperties()
+                .Where(p => p.IsDefined(typeof(MessagePackExtensionDataAttribute), true)).ToArray();
+            if (extensionProperties.Length > 0)
+            {
+                var property = extensionProperties[0];
+                var expectedType = isIntKey ? typeof(Dictionary<int, byte[]>) : typeof(Dictionary<string, byte[]>);
+                if (extensionProperties.Length != 1 || property.PropertyType != expectedType ||
+                    property.GetGetMethod() is not { IsStatic: false } || property.GetSetMethod() is not { IsStatic: false } setter ||
+                    setter.ReturnParameter.GetRequiredCustomModifiers().Any(t => t.FullName == "System.Runtime.CompilerServices.IsExternalInit") ||
+                    property.GetIndexParameters().Length != 0 || property.IsDefined(typeof(KeyAttribute), true) ||
+                    property.CustomAttributes.Any(a => a.AttributeType.FullName == "System.Runtime.CompilerServices.RequiredMemberAttribute"))
+                {
+                    throw new MessagePackDynamicObjectResolverException("Extension data requires one public get/set dictionary property matching the object's key type: " + type.FullName);
+                }
+
+                this.ExtensionDataProperty = property;
+            }
 
 #if !NET6_0_OR_GREATER
             foreach (EmittableMember member in members)

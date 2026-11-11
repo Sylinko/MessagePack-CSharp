@@ -260,8 +260,8 @@ public class TypeCollector
 
         if (!isInaccessible)
         {
-            if (((targetType.TypeKind == TypeKind.Interface) && targetType.GetAttributes().Any(x2 => x2.AttributeClass.ApproximatelyEqual(this.typeReferences.UnionAttribute)))
-                || ((targetType.TypeKind == TypeKind.Class && targetType.IsAbstract) && targetType.GetAttributes().Any(x2 => x2.AttributeClass.ApproximatelyEqual(this.typeReferences.UnionAttribute)))
+            if (((targetType.TypeKind == TypeKind.Interface) && targetType.GetAttributes().Any(x2 => this.typeReferences.IsUnionAttribute(x2.AttributeClass)))
+                || ((targetType.TypeKind == TypeKind.Class && targetType.IsAbstract) && targetType.GetAttributes().Any(x2 => this.typeReferences.IsUnionAttribute(x2.AttributeClass)))
                 || ((targetType.TypeKind == TypeKind.Class) && targetType.GetAttributes().Any(x2 => x2.AttributeClass.ApproximatelyEqual(this.typeReferences.MessagePackObjectAttribute)))
                 || ((targetType.TypeKind == TypeKind.Struct) && targetType.GetAttributes().Any(x2 => x2.AttributeClass.ApproximatelyEqual(this.typeReferences.MessagePackObjectAttribute))))
             {
@@ -401,7 +401,7 @@ public class TypeCollector
 
     private void CollectUnion(INamedTypeSymbol type)
     {
-        ImmutableArray<TypedConstant>[] unionAttrs = type.GetAttributes().Where(x => x.AttributeClass.ApproximatelyEqual(this.typeReferences.UnionAttribute)).Select(x => x.ConstructorArguments).ToArray();
+        ImmutableArray<TypedConstant>[] unionAttrs = type.GetAttributes().Where(x => this.typeReferences.IsUnionAttribute(x.AttributeClass)).Select(x => x.ConstructorArguments).ToArray();
         if (unionAttrs.Length == 0)
         {
             this.reportDiagnostic?.Invoke(Diagnostic.Create(MsgPack00xMessagePackAnalyzer.UnionAttributeRequired, type.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax().GetLocation()));
@@ -440,7 +440,7 @@ public class TypeCollector
 
     private void CollectGenericUnion(INamedTypeSymbol type)
     {
-        var unionAttrs = type.GetAttributes().Where(x => x.AttributeClass.ApproximatelyEqual(this.typeReferences.UnionAttribute)).Select(x => x.ConstructorArguments);
+        var unionAttrs = type.GetAttributes().Where(x => this.typeReferences.IsUnionAttribute(x.AttributeClass)).Select(x => x.ConstructorArguments);
         using var enumerator = unionAttrs.GetEnumerator();
         if (!enumerator.MoveNext())
         {
@@ -789,6 +789,10 @@ public class TypeCollector
         {
             instanceMembers.Remove(overriddenProperty);
         }
+
+        var extensionMembers = formattedType.GetAllMembers().Where(m => m is IPropertySymbol &&
+            m.GetAttributes().Any(a => a.AttributeClass?.ToDisplayString() == "MessagePack.MessagePackExtensionDataAttribute")).ToArray();
+        instanceMembers.RemoveAll(m => extensionMembers.Contains(m, SymbolEqualityComparer.Default));
 
         // The actual member identifiers of each serializable member,
         // such that we'll recognize collisions as we enumerate members in base types
@@ -1475,6 +1479,32 @@ public class TypeCollector
             needsCastOnAfter: needsCastOnAfter,
             needsCastOnBefore: needsCastOnBefore,
             this.options.Generator.Resolver);
+
+        if (extensionMembers.Length > 0)
+        {
+            var keyType = isIntKey ? SpecialType.System_Int32 : SpecialType.System_String;
+            if (extensionMembers.Length != 1 || extensionMembers[0] is not IPropertySymbol property ||
+                property.IsStatic || property.IsRequired || property.IsIndexer || property.GetMethod?.DeclaredAccessibility != Accessibility.Public ||
+                property.SetMethod?.DeclaredAccessibility != Accessibility.Public || property.SetMethod.IsInitOnly ||
+                property.GetAttributes().Any(a => a.AttributeClass.ApproximatelyEqual(this.typeReferences.KeyAttribute)) ||
+                property.Type is not INamedTypeSymbol dictionary || dictionary.Name != "Dictionary" ||
+                dictionary.ContainingNamespace.ToDisplayString() != "System.Collections.Generic" ||
+                dictionary.TypeArguments.Length != 2 || dictionary.TypeArguments[0].SpecialType != keyType ||
+                dictionary.TypeArguments[1] is not IArrayTypeSymbol { Rank: 1, ElementType.SpecialType: SpecialType.System_Byte })
+            {
+                this.reportDiagnostic?.Invoke(Diagnostic.Create(
+                    MsgPack00xMessagePackAnalyzer.InvalidExtensionData,
+                    extensionMembers[0].Locations.FirstOrDefault(),
+                    isIntKey ? "int" : "string"));
+                return null;
+            }
+
+            info = info with
+            {
+                ExtensionDataAccess = property.ContainingType.IsValueType ? "{0}.@" + property.Name
+                    : "((" + property.ContainingType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat) + "){0}).@" + property.Name,
+            };
+        }
 
         return info;
     }

@@ -6,7 +6,7 @@
 namespace NewPropertyInDerivedType
 {
     [MessagePackObject]
-    public class Base : IEquatable<Base>
+    public partial class Base : IEquatable<Base>
     {
 #if FORCE_MAP_MODE
         [Key("A0")]
@@ -33,7 +33,7 @@ namespace NewPropertyInDerivedType
     }
 
     [MessagePackObject]
-    public class Derived : Base, IEquatable<Derived>
+    public partial class Derived : Base, IEquatable<Derived>
     {
 #if FORCE_MAP_MODE
         [Key("A3")]

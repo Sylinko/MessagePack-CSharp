@@ -41,14 +41,26 @@ using MsgPack = global::MessagePack;
 			value.OnBeforeSerialize();
 <# } #>
 <# } #>
+<# if (Info.ExtensionDataAccess != null) { #>
+            var extensionData = <#= Info.GetExtensionDataAccess("value") #>;
+            MsgPack::Internal.ExtensionDataHelper.WriteArrayHeader(ref writer, extensionData, <#= Info.MaxKey + 1 #>);
+<# } else { #>
 			writer.WriteArrayHeader(<#= Info.MaxKey + 1 #>);
+<# } #>
 <# for (var i = 0; i <= Info.MaxKey; i++) {
   var member = Info.GetMember(i);
-  if (member == null) { #>
+  if (member == null) {
+    if (Info.ExtensionDataAccess != null) { #>
+            MsgPack::Internal.ExtensionDataHelper.WriteArrayValue(ref writer, extensionData, <#= i #>);
+<# } else { #>
 			writer.WriteNil();
+<# } #>
 <# } else { #>
 			<#= member.GetSerializeMethodString() #>;
 <# } #>
+<# } #>
+<# if (Info.ExtensionDataAccess != null) { #>
+            MsgPack::Internal.ExtensionDataHelper.WriteArrayTail(ref writer, extensionData, <#= Info.MaxKey + 1 #>);
 <# } #>
 		}
 
@@ -63,7 +75,7 @@ using MsgPack = global::MessagePack;
 <# } #>
 			}
 
-<# if (Info.MaxKey == -1 && !Info.HasIMessagePackSerializationCallbackReceiver) { #>
+<# if (Info.MaxKey == -1 && !Info.HasIMessagePackSerializationCallbackReceiver && Info.ExtensionDataAccess == null) { #>
 			reader.Skip();
 			return new <#= Info.GetConstructorString()  #>;
 <# } else { #>
@@ -72,6 +84,9 @@ using MsgPack = global::MessagePack;
 			MsgPack::IFormatterResolver formatterResolver = options.Resolver;
 <# } #>
 			var length = reader.ReadArrayHeader();
+<# if (Info.ExtensionDataAccess != null) { #>
+            global::System.Collections.Generic.Dictionary<int, byte[]> extensionData = null;
+<# } #>
 <# if (Info.MustDeserializeFieldsFirst) { 
 	foreach (var member in Info.Members) { #>
 			var <#= member.LocalVariableName #> = default(<#= member.Type #>);
@@ -100,7 +115,11 @@ using MsgPack = global::MessagePack;
 						break;
 <# } #>
 					default:
+<# if (Info.ExtensionDataAccess != null) { #>
+                        MsgPack::Internal.ExtensionDataHelper.ReadArrayValue(ref extensionData, i, ref reader);
+<# } else { #>
 						reader.Skip();
+<# } #>
 						break;
 				}
 			}
@@ -125,6 +144,9 @@ using MsgPack = global::MessagePack;
 <# }
  }
 
+ if (Info.ExtensionDataAccess != null) { #>
+            <#= Info.GetExtensionDataAccess("____result") #> = extensionData;
+<# }
  if (Info.HasIMessagePackSerializationCallbackReceiver) {
   if (Info.NeedsCastOnAfter) { #>
 			((MsgPack::IMessagePackSerializationCallbackReceiver)____result).OnAfterDeserialize();

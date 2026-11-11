@@ -17,6 +17,9 @@ using MsgPack = global::MessagePack;
 	internal sealed class <#= Info.Formatter.GetQualifiedName(Qualifiers.None) #> : global::MessagePack.Formatters.IMessagePackFormatter<<#= Info.DataType.GetQualifiedName() #>>
 <# TransformUtilities.EmitTypeConstraints(Info.Formatter, this.Write); #>
 	{
+<# if (Info.ExtensionDataAccess != null) { #>
+        private static readonly string[] ExtensionKnownKeys = new string[] { <#= string.Join(", ", Info.Members.Select(m => Microsoft.CodeAnalysis.CSharp.SymbolDisplay.FormatLiteral(m.StringKey, true))) #> };
+<# } #>
 <# foreach (var item in Info.Members) { #>
 <# if (item.CustomFormatter != null) { #>
 		private readonly <#= item.CustomFormatter.Name.GetQualifiedName() #> __<#= item.Name #>CustomFormatter__ = <#= item.CustomFormatter.InstanceExpression #>;
@@ -53,11 +56,19 @@ using MsgPack = global::MessagePack;
 			value.OnBeforeSerialize();
 <# } #>
 <# } #>
+<# if (Info.ExtensionDataAccess != null) { #>
+            var extensionData = <#= Info.GetExtensionDataAccess("value") #>;
+            MsgPack::Internal.ExtensionDataHelper.WriteMapHeader(ref writer, extensionData, ExtensionKnownKeys);
+<# } else { #>
 			writer.WriteMapHeader(<#= list.Count #>);
+<# } #>
 <# foreach (var memberAndBinary in list) {
 		var member = memberAndBinary.Item1; #>
 			writer.WriteRaw(GetSpan_<#= member.UniqueIdentifier #>());
 			<#= member.GetSerializeMethodString() #>;
+<# } #>
+<# if (Info.ExtensionDataAccess != null) { #>
+            MsgPack::Internal.ExtensionDataHelper.WriteMapValues(ref writer, extensionData, ExtensionKnownKeys);
 <# } #>
 		}
 
@@ -72,7 +83,7 @@ using MsgPack = global::MessagePack;
 <# } #>
 			}
 
-<# if (Info.Members.Length == 0) { #>
+<# if (Info.Members.Length == 0 && Info.ExtensionDataAccess == null) { #>
 			reader.Skip();
 			var ____result = new <#= Info.GetConstructorString() #>;
 <# } else { #>
@@ -81,6 +92,9 @@ using MsgPack = global::MessagePack;
 			var formatterResolver = options.Resolver;
 <# } #>
 			var length = reader.ReadMapHeader();
+<# if (Info.ExtensionDataAccess != null) { #>
+            global::System.Collections.Generic.Dictionary<string, byte[]> extensionData = null;
+<# } #>
 <# if (Info.MustDeserializeFieldsFirst) {
 	foreach (var member in Info.Members.Where(x => x.IsWritable || Info.ConstructorParameters.Any(p => p.Equals(x)))) {
 		// Until C# allows for optionally setting init-only properties (https://github.com/dotnet/csharplang/issues/6117)
@@ -97,11 +111,20 @@ using MsgPack = global::MessagePack;
 			for (int i = 0; i < length; i++)
 			{
 				var stringKey = global::MessagePack.Internal.CodeGenHelpers.ReadStringSpan(ref reader);
+<# if (Info.ExtensionDataAccess != null) { #>
+                var extensionKey = stringKey;
+<# } #>
 				switch (stringKey.Length)
 				{
 					default:
+<# if (Info.Members.Length != 0) { #>
 					FAIL:
+<# } #>
+<# if (Info.ExtensionDataAccess != null) { #>
+                      MsgPack::Internal.ExtensionDataHelper.ReadMapValue(ref extensionData, extensionKey, ref reader);
+<# } else { #>
 					  reader.Skip();
+<# } #>
 					  continue;
 <#= StringKeyFormatterDeserializeHelper.Classify(Info, "					", !Info.MustDeserializeFieldsFirst) #>
 				}
@@ -118,6 +141,9 @@ using MsgPack = global::MessagePack;
 <# } #>
 <# } #>
 <# } #>
+<# if (Info.ExtensionDataAccess != null) { #>
+            <#= Info.GetExtensionDataAccess("____result") #> = extensionData;
+<# } #>
 <# if (Info.HasIMessagePackSerializationCallbackReceiver) {
 		if (Info.NeedsCastOnAfter) { #>
 			((global::MessagePack.IMessagePackSerializationCallbackReceiver)____result).OnAfterDeserialize();
@@ -125,7 +151,7 @@ using MsgPack = global::MessagePack;
 			____result.OnAfterDeserialize();
 <# } #>
 <# } #>
-<# if (Info.Members.Length != 0) { #>
+<# if (Info.Members.Length != 0 || Info.ExtensionDataAccess != null) { #>
 			reader.Depth--;
 <# } #>
 			return ____result;

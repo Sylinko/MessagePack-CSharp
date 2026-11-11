@@ -41,6 +41,11 @@ namespace MessagePack.SourceGenerator.Transforms
             this.Write(">\r\n");
  TransformUtilities.EmitTypeConstraints(Info.Formatter, this.Write); 
             this.Write("\t{\r\n");
+ if (Info.ExtensionDataAccess != null) {
+            this.Write("        private static readonly string[] ExtensionKnownKeys = new string[] { ");
+            this.Write(this.ToStringHelper.ToStringWithCulture(string.Join(", ", Info.Members.Select(m => Microsoft.CodeAnalysis.CSharp.SymbolDisplay.FormatLiteral(m.StringKey, true)))));
+            this.Write(" };\r\n");
+ }
  foreach (var item in Info.Members) { 
  if (item.CustomFormatter != null) { 
             this.Write("\t\tprivate readonly ");
@@ -85,9 +90,16 @@ namespace MessagePack.SourceGenerator.Transforms
             this.Write("\t\t\tvalue.OnBeforeSerialize();\r\n");
  } 
  } 
+ if (Info.ExtensionDataAccess != null) {
+            this.Write("            var extensionData = ");
+            this.Write(this.ToStringHelper.ToStringWithCulture(Info.GetExtensionDataAccess("value")));
+            this.Write(";\r\n            MsgPack::Internal.ExtensionDataHelper.WriteMapHeader(ref writer, e" +
+                    "xtensionData, ExtensionKnownKeys);\r\n");
+ } else {
             this.Write("\t\t\twriter.WriteMapHeader(");
             this.Write(this.ToStringHelper.ToStringWithCulture(list.Count));
             this.Write(");\r\n");
+ }
  foreach (var memberAndBinary in list) {
 		var member = memberAndBinary.Item1; 
             this.Write("\t\t\twriter.WriteRaw(GetSpan_");
@@ -95,6 +107,10 @@ namespace MessagePack.SourceGenerator.Transforms
             this.Write("());\r\n\t\t\t");
             this.Write(this.ToStringHelper.ToStringWithCulture(member.GetSerializeMethodString()));
             this.Write(";\r\n");
+ }
+ if (Info.ExtensionDataAccess != null) {
+            this.Write("            MsgPack::Internal.ExtensionDataHelper.WriteMapValues(ref writer, exte" +
+                    "nsionData, ExtensionKnownKeys);\r\n");
  } 
             this.Write("\t\t}\r\n\r\n\t\tpublic ");
             this.Write(this.ToStringHelper.ToStringWithCulture(Info.DataType.GetQualifiedName()));
@@ -108,7 +124,7 @@ namespace MessagePack.SourceGenerator.Transforms
                     "not supported\");\r\n");
  } 
             this.Write("\t\t\t}\r\n\r\n");
- if (Info.Members.Length == 0) { 
+ if (Info.Members.Length == 0 && Info.ExtensionDataAccess == null) {
             this.Write("\t\t\treader.Skip();\r\n\t\t\tvar ____result = new ");
             this.Write(this.ToStringHelper.ToStringWithCulture(Info.GetConstructorString()));
             this.Write(";\r\n");
@@ -118,6 +134,10 @@ namespace MessagePack.SourceGenerator.Transforms
             this.Write("\t\t\tvar formatterResolver = options.Resolver;\r\n");
  } 
             this.Write("\t\t\tvar length = reader.ReadMapHeader();\r\n");
+ if (Info.ExtensionDataAccess != null) {
+            this.Write("            global::System.Collections.Generic.Dictionary<string, byte[]> extensi" +
+                    "onData = null;\r\n");
+ }
  if (Info.MustDeserializeFieldsFirst) {
 	foreach (var member in Info.Members.Where(x => x.IsWritable || Info.ConstructorParameters.Any(p => p.Equals(x)))) {
 		// Until C# allows for optionally setting init-only properties (https://github.com/dotnet/csharplang/issues/6117)
@@ -139,9 +159,21 @@ namespace MessagePack.SourceGenerator.Transforms
             this.Write(";\r\n");
  } 
             this.Write("\r\n\t\t\tfor (int i = 0; i < length; i++)\r\n\t\t\t{\r\n\t\t\t\tvar stringKey = global::MessageP" +
-                    "ack.Internal.CodeGenHelpers.ReadStringSpan(ref reader);\r\n\t\t\t\tswitch (stringKey.L" +
-                    "ength)\r\n\t\t\t\t{\r\n\t\t\t\t\tdefault:\r\n\t\t\t\t\tFAIL:\r\n\t\t\t\t\t  reader.Skip();\r\n\t\t\t\t\t  continue" +
-                    ";\r\n");
+                    "ack.Internal.CodeGenHelpers.ReadStringSpan(ref reader);\r\n");
+ if (Info.ExtensionDataAccess != null) {
+            this.Write("                var extensionKey = stringKey;\r\n");
+ }
+            this.Write("\t\t\t\tswitch (stringKey.Length)\r\n\t\t\t\t{\r\n\t\t\t\t\tdefault:\r\n");
+ if (Info.Members.Length != 0) {
+            this.Write("\t\t\t\t\tFAIL:\r\n");
+ }
+ if (Info.ExtensionDataAccess != null) {
+            this.Write("                      MsgPack::Internal.ExtensionDataHelper.ReadMapValue(ref exte" +
+                    "nsionData, extensionKey, ref reader);\r\n");
+ } else {
+            this.Write("\t\t\t\t\t  reader.Skip();\r\n");
+ }
+            this.Write("\t\t\t\t\t  continue;\r\n");
             this.Write(this.ToStringHelper.ToStringWithCulture(StringKeyFormatterDeserializeHelper.Classify(Info, "					", !Info.MustDeserializeFieldsFirst)));
             this.Write("\r\n\t\t\t\t}\r\n\t\t\t}\r\n\r\n");
  if (Info.MustDeserializeFieldsFirst) { 
@@ -159,6 +191,11 @@ namespace MessagePack.SourceGenerator.Transforms
  } 
  } 
  } 
+ if (Info.ExtensionDataAccess != null) {
+            this.Write("            ");
+            this.Write(this.ToStringHelper.ToStringWithCulture(Info.GetExtensionDataAccess("____result")));
+            this.Write(" = extensionData;\r\n");
+ }
  if (Info.HasIMessagePackSerializationCallbackReceiver) {
 		if (Info.NeedsCastOnAfter) { 
             this.Write("\t\t\t((global::MessagePack.IMessagePackSerializationCallbackReceiver)____result).On" +
@@ -167,7 +204,7 @@ namespace MessagePack.SourceGenerator.Transforms
             this.Write("\t\t\t____result.OnAfterDeserialize();\r\n");
  } 
  } 
- if (Info.Members.Length != 0) { 
+ if (Info.Members.Length != 0 || Info.ExtensionDataAccess != null) {
             this.Write("\t\t\treader.Depth--;\r\n");
  } 
             this.Write("\t\t\treturn ____result;\r\n\t\t}\r\n\t}\r\n\r\n");

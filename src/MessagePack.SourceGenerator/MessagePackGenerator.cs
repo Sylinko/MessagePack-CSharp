@@ -26,8 +26,16 @@ public partial class MessagePackGenerator : IIncrementalGenerator
             predicate: static (node, _) => node is InterfaceDeclarationSyntax,
             transform: static (context, _) => (ITypeSymbol)context.TargetSymbol);
 
-        var combined =
-            messagePackObjectTypes.Collect().Combine(unionTypes.Collect());
+        var explicitUnionTypes = context.SyntaxProvider.ForAttributeWithMetadataName(
+            $"{AttributeNamespace}.MessagePackUnionAttribute",
+            predicate: static (node, _) => node is InterfaceDeclarationSyntax,
+            transform: static (context, _) => (ITypeSymbol)context.TargetSymbol);
+
+        var allUnionTypes = unionTypes.Collect().Combine(explicitUnionTypes.Collect())
+            .Select(static (types, _) => types.Left.AddRange(types.Right)
+                .Distinct<ITypeSymbol>(SymbolEqualityComparer.Default).ToImmutableArray());
+
+        var combined = messagePackObjectTypes.Collect().Combine(allUnionTypes);
 
         var source = combined
             .Combine(context.CompilationProvider)

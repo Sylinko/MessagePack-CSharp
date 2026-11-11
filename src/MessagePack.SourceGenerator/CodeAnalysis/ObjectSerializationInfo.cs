@@ -10,6 +10,10 @@ public record ObjectSerializationInfo : ResolverRegisterInfo
 {
     public required bool IsClass { get; init; }
 
+    public string? ExtensionDataAccess { get; init; }
+
+    public string GetExtensionDataAccess(string instance) => string.Format(this.ExtensionDataAccess!, instance);
+
     public required GenericTypeParameterInfo[] GenericTypeParameters { get; init; }
 
     public required MemberSerializationInfo[] ConstructorParameters { get; init; }
@@ -158,6 +162,7 @@ public record ObjectSerializationInfo : ResolverRegisterInfo
 
         // Compare all the properties by value
         return base.Equals(other)
+            && ExtensionDataAccess == other.ExtensionDataAccess
             && IsClass == other.IsClass
             && GenericTypeParameters.SequenceEqual(other.GenericTypeParameters)
             && ConstructorParameters.SequenceEqual(other.ConstructorParameters)
