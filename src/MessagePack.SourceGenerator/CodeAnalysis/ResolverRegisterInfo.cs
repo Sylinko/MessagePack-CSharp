@@ -35,7 +35,10 @@ public record ResolverRegisterInfo
             {
                 Container = NestingTypeContainer.From(formatterLocation switch
                 {
-                    FormatterPosition.UnderResolver => GetNestingTypeForFormatterUnderResolver(dataTypeName, resolverOptions),
+                    // Keep the real containing chain for namespaced nested types.
+                    FormatterPosition.UnderResolver when dataType.ContainingNamespace is { IsGlobalNamespace: false } &&
+                        dataTypeName.Container is NestingTypeContainer { NestingType: var containingType } => containingType,
+                    FormatterPosition.UnderResolver => GetDefaultFormatterContainer(dataTypeName, resolverOptions),
                     FormatterPosition.UnderDataType => dataTypeName,
                     _ => throw new NotImplementedException(),
                 }),
@@ -85,8 +88,8 @@ public record ResolverRegisterInfo
     /// </summary>
     /// <remarks>
     /// The formatter is always a nested class of something else (the resolver or the data type).
-    /// If the formatter is nested under the resolver, the namespaces of the data type become nested types
-    /// under which the formatter is declared.
+    /// Default placement keeps namespaced types in their partial type hierarchy and uses the
+    /// resolver for types in the global namespace.
     /// </remarks>
     public FormatterPosition FormatterLocation { get; init; }
 
@@ -104,23 +107,19 @@ public record ResolverRegisterInfo
 
     public string FileNameHint => $"Formatters.{this.Formatter.GetQualifiedName(Qualifiers.Namespace, GenericParameterStyle.ArityOnly)}";
 
-    private static QualifiedNamedTypeName? GetNestingTypeForFormatterUnderResolver(QualifiedTypeName dataType, ResolverOptions resolverOptions)
+    private static QualifiedNamedTypeName? GetDefaultFormatterContainer(QualifiedNamedTypeName dataType, ResolverOptions resolverOptions)
     {
-        // Each nesting type of the data type become a nested type for the formatter.
-        if (dataType is QualifiedNamedTypeName { Container: NestingTypeContainer { NestingType: { } nestingType } })
+        if (dataType.Container is NestingTypeContainer { NestingType: var nestingType })
         {
-            // The data type aready has a nesting type. Reusing that for the formatter, but recurse in
-            // because ultimately we need to add the namespaces as nesting types, and then add the resolver
-            // as the outermost type and finally the namespace the resolver appears in.
+            // Global-namespace nested types keep their synthetic containing types under the resolver.
             return nestingType with
             {
-                Container = GetNestingTypeForFormatterUnderResolver(nestingType, resolverOptions) is { } n ? new NestingTypeContainer(n) : null,
+                Container = NestingTypeContainer.From(GetDefaultFormatterContainer(nestingType, resolverOptions)),
                 AccessModifier = Accessibility.Internal,
             };
         }
 
-        // Each namespace of the data type also becomes a nesting type of the formatter.
-        if (dataType is QualifiedNamedTypeName { Container: NamespaceTypeContainer { Namespace: { } ns } })
+        if (dataType.Container is NamespaceTypeContainer { Namespace: var ns })
         {
             var name = dataType.Kind == TypeKind.Enum ? "__MessagePack__EnumFormatter" : dataType.GetQualifiedName(Qualifiers.None);
             return new QualifiedNamedTypeName(
